@@ -1,44 +1,34 @@
 '''
 HHG GAME
 '''
-import math
-import os
-import random
-import sys
+import numpy as np
 
 import pyglet
-from pyglet.gl import *
-from pyglet import resource
-from pyglet.window import key
+from OpenGL.GL import *
+from OpenGL.GLU import *
+from OpenGL.GLUT import *
 
-PLAYER_SPIN_SPEED = 360.
-PLAYER_ACCEL = 200.
-PLAYER_FIRE_DELAY = 0.1
+WINDOW_WIDTH  = 1000
+WINDOW_HEIGHT = 700
 
-BULLET_SPEED = 1000.
+ELECTRON_DRAW_PARAMS = {'diffuse': [0, 1, 0, 1],
+                        'specular': [1, 1, 1, 1],
+                        'shininess': 40,
+                        'slices': 10,
+                        'stacks': 5}
 
-MAX_ASTEROID_SPIN_SPEED = 180.
-MAX_ASTEROID_SPEED = 100.
+NUCLEAR_DRAW_PARAMS = {'diffuse': [1, 0, 0, 1],
+                       'specular': [1, 1, 1, 1],
+                       'shininess': 40,
+                       'slices': 15,
+                       'stacks': 15}
 
-INITIAL_ASTEROIDS = [2, 3, 4, 5]
-ASTEROID_DEBRIS_COUNT = 3
-MAX_DIFFICULTY = len(INITIAL_ASTEROIDS) - 1
+ATOM_RADIUS = 5
+ELECTRON_INITIAL_POSITION = [ATOM_RADIUS, 0, 0]
+ELECTRON_INITIAL_VELOCITY = [0, 1/np.sqrt(ATOM_RADIUS), 0]
+ELECTRON_ANGULAR_FREQUENCY = 1/np.sqrt(ATOM_RADIUS)**3
 
-ARENA_WIDTH = 640
-ARENA_HEIGHT = 480
-
-KEY_FIRE = key.SPACE
-KEY_PAUSE = key.ESCAPE
-
-COLLISION_RESOLUTION = 8
-
-SMOKE_ANIMATION_PERIOD = 0.05
-EXPLOSION_ANIMATION_PERIOD = 0.07
-PLAYER_FLASH_PERIOD = 0.15
-
-GET_READY_DELAY = 1.
-BEGIN_PLAY_DELAY = 2.
-LIFE_LOST_DELAY = 2.
+TIME_SCALE_FACTOR = 100
 
 FONT_NAME = ('Verdana', 'Helvetica', 'Arial')
 
@@ -51,200 +41,81 @@ Space: Shoot
 
 Be careful, there's not much friction in space.'''
 
-def center_anchor(img):
-    img.anchor_x = img.width // 2
-    img.anchor_y = img.height // 2
-
 # --------------------------------------------------------------------------
 # Game objects
 # --------------------------------------------------------------------------
 
-def wrap(value, width):
-    if value > width:
-        value -= width
-    if value < 0:
-        value += width
-    return value
+class Particle:
+  def __init__(self, size, position, draw_params):
+    #color_params is a dictionary like {'diffuse': [1, 0, 0, 1], 'ambient': ...}
+    self.size = size
+    self.x, self.y, self.z = position
+    self.draw_params = draw_params
 
-def to_radians(degrees):
-    return math.pi * degrees / 180.0
+  def draw(self):
+    glPushMatrix()
+    glTranslated(self.x, self.y, self.z)
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, self.draw_params['diffuse'])
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, self.draw_params['specular'])
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, self.draw_params['shininess'])
+    glutSolidSphere(self.size, self.draw_params['slices'], self.draw_params['stacks'])
+    glPopMatrix()
 
-class WrappingSprite(pyglet.sprite.Sprite):
-    dx = 0
-    dy = 0
-    rotation_speed = 0
+class Nuclear(Particle):
+  def __init__(self, size, position, draw_params):
+    super().__init__(size, position, draw_params)
 
-    def __init__(self, img, x, y, batch=None):
-        super(WrappingSprite, self).__init__(img, x, y, batch=batch)
-        self.collision_radius = self.image.width // COLLISION_RESOLUTION // 2 
+  def update(self):
+    pass
 
-    def update(self, dt):
-        x = self.x + self.dx * dt
-        y = self.y + self.dy * dt
-        rotation = self.rotation + self.rotation_speed * dt
+class Electron_ionized(Particle):
+  def __init__(self, size, position, velocity, draw_params):
+    super().__init__(size, position, draw_params)
+    self.vx, self.vy, self.vz = velocity
 
-        self.x = wrap(x, ARENA_WIDTH)
-        self.y = wrap(y, ARENA_HEIGHT)
-        self.rotation = wrap(rotation, 360.)
+  def update(self, dt, e):
+    self.__RK4_xy(dt, e[0], e[1])
 
-    def collision_cells(self):
-        '''Generate a sequence of (x, y) cells this object covers,
-        approximately.''' 
-        radius = self.collision_radius
-        cellx = int(self.x / COLLISION_RESOLUTION)
-        celly = int(self.y / COLLISION_RESOLUTION)
-        for y in range(celly - radius, celly + radius + 1):
-            for x in range(cellx - radius, cellx + radius + 1):
-                yield x, y
+  def __coulomb_force_xy(self, x, y):
+    return -x/np.sqrt(x**2+y**2)**3
 
-class AsteroidSize(object):
-    def __init__(self, filename, points):
-        self.img = resource.image(filename)
-        center_anchor(self.img)
-        self.next_size = None
-        self.points = points
+  def __RK4_xy(self, dt, ex, ey):
+    kx1 = dt*self.vx
+    kvx1 = dt*(self.__coulomb_force_xy(self.x, self.y)+ex)
+    ky1 = dt*self.vy
+    kvy1 = dt*(self.__coulomb_force_xy(self.y, self.x)+ey)
+    kx2 = dt*(self.vx+kvx1/2)
+    kvx2 = dt*(self.__coulomb_force_xy(self.x+kx1/2, self.y+ky1/2)+ex)
+    ky2 = dt*(self.vy+kvy1/2)
+    kvy2 = dt*(self.__coulomb_force_xy(self.y+ky1/2, self.x+kx1/2)+ey)
+    kx3 = dt*(self.vx+kvx2/2)
+    kvx3 = dt*(self.__coulomb_force_xy(self.x+kx2/2, self.y+ky2/2)+ex)
+    ky3 = dt*(self.vy+kvy2/2)
+    kvy3 = dt*(self.__coulomb_force_xy(self.y+ky2/2, self.x+kx2/2)+ey)
+    kx4 = dt*(self.vx+kvx3)
+    kvx4 = dt*(self.__coulomb_force_xy(self.x+kx3, self.y+ky3)+ex)
+    ky4 = dt*(self.vy+kvy3)
+    kvy4 = dt*(self.__coulomb_force_xy(self.y+ky3, self.x+kx3)+ey)
+    self.x += (kx1+2*kx2+2*kx3+kx4)/6
+    self.y += (ky1+2*ky2+2*ky3+ky4)/6
+    self.vx += (kvx1+2*kvx2+2*kvx3+kvx4)/6
+    self.vy += (kvy1+2*kvy2+2*kvy3+kvy4)/6
 
-class Asteroid(WrappingSprite):
-    def __init__(self, size, x, y, batch=None):
-        super(Asteroid, self).__init__(size.img, x, y, batch=batch)
-        self.dx = (random.random() - 0.5) * MAX_ASTEROID_SPEED
-        self.dy = (random.random() - 0.5) * MAX_ASTEROID_SPEED
-        self.size = size
-        self.rotation = random.random() * 360.
-        self.rotation_speed = (random.random() - 0.5) * MAX_ASTEROID_SPIN_SPEED
-        self.hit = False
+class Electron_localized(Particle):
+  def __init__(self, size, position, velocity, draw_params):
+    super().__init__(size, position, draw_params)
+    self.vx, self.vy, self.vz = velocity
+    if self.x == 0:
+      self.angle0 = np.pi/2 if self.y > 0 else -np.pi/2
+    else:
+      self.angle0 = np.arctan(self.y/self.x)
+    self.r = np.sqrt(self.x**2+self.y**2)
+    self.t = 0
 
-    def destroy(self):
-        global score
-        score += self.size.points
-
-        # Modifies the asteroids list.
-        next_size = self.size.next_size
-        if next_size:
-            # Spawn debris
-            for i in range(ASTEROID_DEBRIS_COUNT):
-                asteroids.append(Asteroid(next_size, self.x, self.y,
-                                          batch=self.batch))
-
-        self.delete()
-        asteroids.remove(self)
-
-class Player(WrappingSprite, key.KeyStateHandler):
-    def __init__(self, img, batch=None):
-        super(Player, self).__init__(img, ARENA_WIDTH // 2, ARENA_HEIGHT // 2,
-            batch=batch)
-        center_anchor(img)
-        self.reset()
-
-    def reset(self):
-        self.x = ARENA_WIDTH // 2
-        self.y = ARENA_HEIGHT // 2
-        self.dx = 0
-        self.dy = 0
-        self.rotation = 0
-        self.fire_timeout = 0
-        self.hit = False
-        self.invincible = True
-        self.visible = True
-
-        self.flash_timeout = 0
-        self.flash_visible = False
-
-    def update(self, dt):
-        # Update rotation
-        if self[key.LEFT]:
-            self.rotation -= PLAYER_SPIN_SPEED * dt
-        if self[key.RIGHT]:
-            self.rotation += PLAYER_SPIN_SPEED * dt
-
-        # Get x/y components of orientation
-        rotation_x = math.cos(to_radians(-self.rotation))
-        rotation_y = math.sin(to_radians(-self.rotation))
-
-        # Update velocity
-        if self[key.UP]:
-            self.dx += PLAYER_ACCEL * rotation_x * dt
-            self.dy += PLAYER_ACCEL * rotation_y * dt
-
-        # Update position
-        super(Player, self).update(dt)
-
-        # Fire bullet?
-        self.fire_timeout -= dt
-        if self[KEY_FIRE] and self.fire_timeout <= 0 and not self.invincible:
-            self.fire_timeout = PLAYER_FIRE_DELAY
-
-            # For simplicity, start the bullet at the player position.  If the
-            # ship were bigger, or if bullets moved slower we'd adjust this
-            # based on the orientation of the ship.
-            bullets.append(Bullet(self.x, self.y, 
-                                  rotation_x * BULLET_SPEED,
-                                  rotation_y * BULLET_SPEED, batch=batch))
-
-            if enable_sound:
-                bullet_sound.play()
-
-        # Update flash (invincible) animation
-        if self.invincible:
-            self.flash_timeout -= dt
-            if self.flash_timeout <= 0:
-                self.flash_timeout = PLAYER_FLASH_PERIOD
-                self.flash_visible = not self.flash_visible
-        else:
-            self.flash_visible = True
-
-        self.opacity = (self.visible and self.flash_visible) and 255 or 0
-
-class MovingSprite(pyglet.sprite.Sprite):
-    def __init__(self, image, x, y, dx, dy, batch=None):
-        super(MovingSprite, self).__init__(image, x, y, batch=batch)
-        self.dx = dx
-        self.dy = dy
-
-    def update(self, dt):
-        self.x += self.dx * dt
-        self.y += self.dy * dt
-
-class Bullet(MovingSprite):
-    def __init__(self, x, y, dx, dy, batch=None):
-        super(Bullet, self).__init__(bullet_image, x, y, dx, dy, batch=batch)
-
-    def update(self, dt):
-        self.x += self.dx * dt
-        self.y += self.dy * dt
-        if not (self.x >= 0 and self.x < ARENA_WIDTH and
-                self.y >= 0 and self.y < ARENA_HEIGHT):
-            self.delete()
-            bullets.remove(self)
-
-class EffectSprite(MovingSprite):
-    def on_animation_end(self):
-        self.delete()
-        animations.remove(self)
-
-class Starfield(object):
-    def __init__(self, img):
-        self.x = 0
-        self.y = 0
-        self.dx = 0.05
-        self.dy = -0.06
-        self.img = img
-
-    def update(self, dt):
-        self.x += self.dx * dt
-        self.y += self.dy * dt
-
-    def draw(self):
-        # Fiddle with the texture matrix to make the starfield slide slowly
-        # over the window.
-        glMatrixMode(GL_TEXTURE)
-        glPushMatrix()
-        glTranslatef(self.x, self.y, 0)
-        
-        self.img.blit(0, 0, width=ARENA_WIDTH, height=ARENA_HEIGHT)
-        
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
+  def update(self, dt):
+    self.x = self.r*np.cos(ELECTRON_ANGULAR_FREQUENCY*self.t+self.angle0)
+    self.y = self.r*np.sin(ELECTRON_ANGULAR_FREQUENCY*self.t+self.angle0)
+    self.t += dt
 
 # --------------------------------------------------------------------------
 # Overlays, such as menus and "Game Over" banners
@@ -262,7 +133,7 @@ class Banner(Overlay):
         self.text = pyglet.text.Label(label,
                                       font_name=FONT_NAME,
                                       font_size=36,
-                                      x=ARENA_WIDTH // 2, 
+                                      x=ARENA_WIDTH // 2,
                                       y=ARENA_HEIGHT // 2,
                                       anchor_x='center',
                                       anchor_y='center')
@@ -519,7 +390,7 @@ def check_collisions():
 
 def begin_main_menu():
     set_overlay(MainMenu())
-    
+
 def begin_options_menu():
     set_overlay(OptionsMenu())
 
@@ -575,7 +446,7 @@ def begin_play(*args):
 def begin_life(*args):
     player.reset()
     pyglet.clock.schedule_once(begin_play, BEGIN_PLAY_DELAY)
-    
+
 def life_lost(*args):
     global player_lives
     player_lives -= 1
@@ -662,194 +533,60 @@ def begin_clear_background():
 # Create window
 # --------------------------------------------------------------------------
 
-win = pyglet.window.Window(ARENA_WIDTH, ARENA_HEIGHT, caption='Astraea')
-
-@win.event
-def on_key_press(symbol, modifiers):
-    # Overrides default Escape key behaviour
-    if symbol == KEY_PAUSE and in_game:
-        if not paused:
-            pause_game()
-        else:
-            resume_game()
-        return True
-    elif symbol == key.ESCAPE:
-        sys.exit()
-    return pyglet.event.EVENT_HANDLED
+win = pyglet.window.Window(WINDOW_WIDTH, WINDOW_HEIGHT, caption='HHG Game')
 
 @win.event
 def on_draw():
-    glColor3f(1, 1, 1)
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+  glLoadIdentity()
+  gluLookAt(0, 0, 50, 0.0, 0.0, 0.0, 0.0, 1, 0)
+  glLightfv(GL_LIGHT0, GL_POSITION, [5.0, 5.0, 5.0, 0.0])
+  electron_ionized.draw()
+  electron_localized.draw()
+  nuclear.draw()
 
-    # Render
-    starfield.draw()
-
-    for (x, y) in ((0, ARENA_HEIGHT),   # Top
-                   (-ARENA_WIDTH, 0),   # Left
-                   (0, 0),              # Center
-                   (ARENA_WIDTH, 0),    # Right
-                   (0, -ARENA_HEIGHT)): # Bottom
-        glLoadIdentity()
-        glTranslatef(x, y, 0)
-        wrapping_batch.draw()
-
-    glLoadIdentity()
-    batch.draw()
-
-    glLoadIdentity()
-
-    if in_game:
-        # HUD ship lives
-        x = 10 + player.image.width // 2
-        for i in range(player_lives - 1):
-            player.image.blit(x, win.height - player.image.height // 2 - 10, 0)
-            x += player.image.width + 10
-        
-        # HUD score
-        score_text.text = str(score)
-        score_text.draw()
-
-    if overlay:
-        overlay.draw()
-
-    if show_fps:
-        fps_display.draw()
-
-
-# --------------------------------------------------------------------------
-# Load resources
-# --------------------------------------------------------------------------
-
-batch = pyglet.graphics.Batch()
-wrapping_batch = pyglet.graphics.Batch()
-
-resource.path.append('res')
-resource.reindex()
-
-asteroid_sizes = [AsteroidSize('asteroid1.png', 100),
-                  AsteroidSize('asteroid2.png', 50),
-                  AsteroidSize('asteroid3.png', 10)]
-for small, big in zip(asteroid_sizes[:-1], asteroid_sizes[1:]):
-    big.next_size = small
-
-bullet_image = resource.image('bullet.png')
-center_anchor(bullet_image)
-
-smoke_images_image = resource.image('smoke.png')
-smoke_images = pyglet.image.ImageGrid(smoke_images_image, 1, 8)
-for smoke_image in smoke_images:
-    center_anchor(smoke_image)
-smoke_animation = \
-    pyglet.image.Animation.from_image_sequence(smoke_images,
-                                               SMOKE_ANIMATION_PERIOD,
-                                               loop=False)
-
-explosion_images_image = resource.image('explosion.png')
-explosion_images = pyglet.image.ImageGrid(explosion_images_image, 2, 8)
-explosion_images = explosion_images.get_texture_sequence()
-for explosion_image in explosion_images:
-    center_anchor(explosion_image)
-explosion_animation = \
-    pyglet.image.Animation.from_image_sequence(explosion_images,
-                                               EXPLOSION_ANIMATION_PERIOD,
-                                               loop=False)
-
-pointer_image = resource.image('pointer.png')
-pointer_image.anchor_x = pointer_image.width // 2
-pointer_image.anchor_y = pointer_image.height // 2
-pointer_image_flip = resource.image('pointer.png', flip_x=True)
-
-explosion_sound = resource.media('explosion.wav', streaming=False)
-bullet_sound = resource.media('bullet.wav', streaming=False)
-
-starfield = Starfield(resource.image('starfield.jpg'))
-player = Player(resource.image('ship.png'), wrapping_batch)
-win.push_handlers(player)
+@win.event
+def on_resize(width, height):
+  glMatrixMode(GL_PROJECTION)
+  glLoadIdentity()
+  glViewport(0, 0, width, height)
+  gluPerspective(45, width//height, 0.1, 1000)
+  glMatrixMode(GL_MODELVIEW)
+  return pyglet.event.EVENT_HANDLED
 
 # --------------------------------------------------------------------------
 # Global game state vars
 # --------------------------------------------------------------------------
-
-overlay = None
-in_game = False
-paused = False
-score = 0
-
-difficulty = 2
-show_fps = False
-enable_sound = True
-
-score_text = pyglet.text.Label('',
-                               font_name=FONT_NAME,
-                               font_size=18,
-                               x=ARENA_WIDTH - 10, 
-                               y=ARENA_HEIGHT - 10,
-                               anchor_x='right',
-                               anchor_y='top')
-
-fps_display = pyglet.window.FPSDisplay(win)
-
-bullets = []
-animations = []
 
 # --------------------------------------------------------------------------
 # Game update
 # --------------------------------------------------------------------------
 
 def update(dt):
-    if overlay:
-        overlay.update(dt)
+  dt_scaled = dt*TIME_SCALE_FACTOR
+  electron_ionized.update(dt_scaled, [0, 0])
+  electron_localized.update(dt_scaled)
+  nuclear.update()
 
-    if not paused:
-        starfield.update(dt)
-
-        player.update(dt)
-        for asteroid in asteroids:
-            asteroid.update(dt)
-        for bullet in bullets[:]:
-            bullet.update(dt)
-        for animation in animations[:]:
-            animation.update(dt)
-
-
-    if not player.invincible:
-        # Collide bullets and player with asteroids
-        check_collisions()
-
-        # Destroy asteroids that were hit
-        for asteroid in [a for a in asteroids if a.hit]:
-            animations.append(EffectSprite(smoke_animation,
-                                           asteroid.x, asteroid.y, 
-                                           asteroid.dx, asteroid.dy,
-                                           batch=batch))
-            asteroid.destroy()
-            if enable_sound:
-                explosion_sound.play()
-
-        # Check if the player was hit 
-        if player.hit:
-            animations.append(EffectSprite(explosion_animation,
-                                           player.x, player.y,
-                                           player.dx, player.dy, 
-                                           batch=batch))
-            player.invincible = True
-            player.visible = False
-            pyglet.clock.schedule_once(life_lost, LIFE_LOST_DELAY)
-
-        # Check if the area is clear
-        if not asteroids:
-            next_round()
 pyglet.clock.schedule_interval(update, 1/60.)
 
 # --------------------------------------------------------------------------
 # Start game
 # --------------------------------------------------------------------------
+def init_gl():
+  glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
+  glEnable(GL_CULL_FACE)
+  glCullFace(GL_BACK)
+  glEnable(GL_DEPTH_TEST)
+  glEnable(GL_LIGHTING)
+  glEnable(GL_LIGHT0)
+  glLightfv(GL_LIGHT0, GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0])
+  glLightfv(GL_LIGHT0, GL_SPECULAR, [1.0, 1.0, 1.0, 1.0])
 
-glEnable(GL_BLEND)
-glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+electron_ionized = Electron_ionized(3, [10, 0, 0], [0, 1, 0], ELECTRON_DRAW_PARAMS)
+electron_localized = Electron_localized(3, [10, 0, 0], [0, 1, 0], ELECTRON_DRAW_PARAMS)
+nuclear = Nuclear(5, [0, 0, 0], NUCLEAR_DRAW_PARAMS)
 
-begin_menu_background()
-begin_main_menu()
-
+init_gl()
 pyglet.app.run()
 
