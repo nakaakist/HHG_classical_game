@@ -1,0 +1,6 @@
+*.dat
+*.ipynb
+*.o
+*.pyc
+tmp/*
+
