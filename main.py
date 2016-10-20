@@ -265,13 +265,6 @@ class Banner(Overlay):
     if button == pyglet.window.mouse.LEFT:
       self.invoke_func()
 
-class GameOver(Banner):
-  def __init__(self):
-    super().__init__('電子を見失った!', show_start_menu)
-
-  def on_key_press(self, symbol, modifiers):
-    return True
-
 class TextList(Overlay):
   def __init__(self, title, invoke_func):
     self.items = []
@@ -283,6 +276,11 @@ class TextList(Overlay):
                                         y=MENU_TITLE_POSITION,
                                         anchor_x='center',
                                         anchor_y='center')
+
+  def append_label(self, label):
+    item = TextListItem(label, -(len(self.items)+1)*MENU_ITEM_INTERVAL)
+    self.items.append(item)
+
   def draw(self):
     self.title_text.draw()
     [item.draw() for item in self.items]
@@ -304,11 +302,16 @@ class TextListItem(Overlay):
   def draw(self):
     self.text.draw()
 
+class GameOver(TextList):
+  def __init__(self):
+    super().__init__('電子を見失った!', show_start_menu)
+    self.append_label('左clickでメニューへ')
+
 class Cleared(TextList):
   def __init__(self, score):
     super().__init__('高調波発生!', show_ranking_after_clear)
-    energy_text = TextListItem('エネルギー %d eV' % score, -MENU_ITEM_INTERVAL)
-    self.items.append(energy_text)
+    self.append_label('エネルギー %d eV' % score)
+    self.append_label('左clickで次へ' % score)
 
 class Ranking(TextList):
   def __init__(self):
@@ -316,10 +319,10 @@ class Ranking(TextList):
     if os.path.exists(RANKING_FILENAME):
       ranking_data = pd.read_csv(RANKING_FILENAME).sort_values(by='score', ascending=False)
       for i in range(min(5, ranking_data.index.size)):
-        rank_text = TextListItem('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']), -MENU_ITEM_INTERVAL*(i+1))
-        self.items.append(rank_text)
+        self.append_label('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']))
     else:
-      rank_text = TextListItem('データなし', -MENU_ITEM_INTERVAL)
+      self.append_label('データなし')
+    self.append_label('左clickで戻る')
 
 class RankingAfterClear(TextList):
   def __init__(self):
@@ -338,15 +341,15 @@ class RankingAfterClear(TextList):
           if i_rank == rank-1:
             rank_text = TextListItem('%d位: あなた  %d eV' % (i_rank+1, score), -MENU_ITEM_INTERVAL*(i_rank+1))
             rank_text.text.color = [255, 255, 0, 255]
+            self.items.append(rank_text)
           else:
-            rank_text = TextListItem('%d位: %s さん  %d eV' % (i_rank+1, ranking_data.iloc[i_rank]['name'], ranking_data.iloc[i_rank]['score']), -MENU_ITEM_INTERVAL*(i_rank+1))
+            self.append_label('%d位: %s さん  %d eV' % (i_rank+1, ranking_data.iloc[i_rank]['name'], ranking_data.iloc[i_rank]['score']))
           i_rank += 1
-          self.items.append(rank_text)
       else:
         super().__init__('ランク外。あなたの順位は%d位です' % rank, show_start_menu)
         for i in range(min(5, ranking_data.index.size)):
-          rank_text = TextListItem('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']), -MENU_ITEM_INTERVAL*(i+1))
-          self.items.append(rank_text)
+          self.append_label('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']))
+    self.append_label('左clickで次へ')
 
 class InputName(Overlay):
   def __init__(self):
@@ -389,6 +392,7 @@ class InputName(Overlay):
 class Menu(Overlay):
   def __init__(self, title):
     self.items = []
+    self.caption = None
     self.selected_index = 0
     self.title_text = pyglet.text.Label(title,
                                         font_name=FONT_NAME,
@@ -398,28 +402,26 @@ class Menu(Overlay):
                                         anchor_x='center',
                                         anchor_y='center')
 
-  def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-    self.selected_index += scroll_y
-    self.selected_index %= len(self.items)
-
-  def on_text_motion(self, motion):
-    if motion == pyglet.window.key.MOTION_UP:
-      self.selected_index -= 1
-    elif motion == pyglet.window.key.MOTION_DOWN:
-      self.selected_index += 1
-    self.selected_index %= len(self.items)
-
   def on_mouse_press(self, x, y, button, modifiers):
-    self.items[self.selected_index].invoke_func()
+    if button == pyglet.window.mouse.LEFT:
+      i = -int((y-WINDOW_HEIGHT//2+0.5*MENU_ITEM_INTERVAL)/MENU_ITEM_INTERVAL)
+      if (i >= 0 ) and (i < len(self.items)):
+        self.items[i].invoke_func()
 
-  def on_key_press(self, symbol, modifiers):
-    if symbol == pyglet.window.key.ENTER:
-      self.items[self.selected_index].invoke_func()
+  def add_caption(self, label):
+    self.caption = pyglet.text.Label(label,
+                                     font_name=FONT_NAME,
+                                     font_size=MENU_ITEM_SIZE,
+                                     x=0,
+                                     y=-MENU_ITEM_INTERVAL*(len(self.items)+1),
+                                     anchor_x='center',
+                                     anchor_y='center')
 
   def draw(self):
     self.title_text.draw()
     for i, item in enumerate(self.items):
-      item.draw(i == self.selected_index)
+      item.draw()
+    self.caption.draw()
 
 class MenuItem(object):
   def __init__(self, label, y, invoke_func):
@@ -433,11 +435,7 @@ class MenuItem(object):
                                   anchor_x='center',
                                   anchor_y='center')
 
-  def draw(self, selected):
-    if selected:
-      self.text.color = [255]*4
-    else:
-      self.text.color = [150]*4
+  def draw(self):
     self.text.draw()
 
 class StartMenu(Menu):
@@ -445,14 +443,8 @@ class StartMenu(Menu):
     super().__init__('高次高調波発生ゲーム')
     self.items.append(MenuItem('遊ぶ', -MENU_ITEM_INTERVAL, start_game_transition))
     self.items.append(MenuItem('ランキング', -MENU_ITEM_INTERVAL*2, show_ranking))
-
-  def on_mouse_press(self, x, y, button, modifiers):
-    if button == pyglet.window.mouse.LEFT:
-      mid_y = WINDOW_HEIGHT//2
-      if (mid_y-MENU_ITEM_INTERVAL*0.5 > y) and (y > mid_y-MENU_ITEM_INTERVAL*1.5):
-        self.items[0].invoke_func()
-      if (mid_y-MENU_ITEM_INTERVAL*1.5 > y) and (y > mid_y-MENU_ITEM_INTERVAL*2.5):
-        self.items[1].invoke_func()
+    self.items.append(MenuItem('遊び方', -MENU_ITEM_INTERVAL*3, start_tutorial_transition))
+    self.add_caption('左clickで選択')
 
 # --------------------------------------------------------------------------
 # In game event handler
@@ -498,6 +490,11 @@ def start_game_transition():
   in_transition_from_start_menu_to_game = True
   t_transition = 0
   pyglet.clock.schedule_once(start_game, START_GAME_DELAY)
+
+def start_tutorial_transition():
+  in_tutorial = True
+  start_game_transition()
+
 
 def start_game(dt):
   global in_transition_from_start_menu_to_game, in_game_event_handler, in_game
@@ -667,6 +664,7 @@ def on_resize(width, height):
 
 in_start_menu = True
 in_game = False
+in_tutorial = False
 in_transition_from_start_menu_to_game = False
 is_ionized = False
 is_gameover = False
