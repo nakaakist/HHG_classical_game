@@ -267,7 +267,7 @@ class Banner(Overlay):
 
 class GameOver(Banner):
   def __init__(self):
-    super().__init__('GAME OVER', show_start_menu)
+    super().__init__('電子を見失った!', show_start_menu)
 
   def on_key_press(self, symbol, modifiers):
     return True
@@ -306,13 +306,13 @@ class TextListItem(Overlay):
 
 class Cleared(TextList):
   def __init__(self, score):
-    super().__init__('CLEARED!', show_ranking_after_clear)
+    super().__init__('高調波発生!', show_ranking_after_clear)
     energy_text = TextListItem('エネルギー %d eV' % score, -MENU_ITEM_INTERVAL)
     self.items.append(energy_text)
 
 class Ranking(TextList):
   def __init__(self):
-    super().__init__('RANKING', show_start_menu)
+    super().__init__('ランキング', show_start_menu)
     if os.path.exists(RANKING_FILENAME):
       ranking_data = pd.read_csv(RANKING_FILENAME).sort_values(by='score', ascending=False)
       for i in range(min(5, ranking_data.index.size)):
@@ -402,8 +402,19 @@ class Menu(Overlay):
     self.selected_index += scroll_y
     self.selected_index %= len(self.items)
 
+  def on_text_motion(self, motion):
+    if motion == pyglet.window.key.MOTION_UP:
+      self.selected_index -= 1
+    elif motion == pyglet.window.key.MOTION_DOWN:
+      self.selected_index += 1
+    self.selected_index %= len(self.items)
+
   def on_mouse_press(self, x, y, button, modifiers):
     self.items[self.selected_index].invoke_func()
+
+  def on_key_press(self, symbol, modifiers):
+    if symbol == pyglet.window.key.ENTER:
+      self.items[self.selected_index].invoke_func()
 
   def draw(self):
     self.title_text.draw()
@@ -431,9 +442,17 @@ class MenuItem(object):
 
 class StartMenu(Menu):
   def __init__(self):
-    super().__init__('HHG GAME')
-    self.items.append(MenuItem('START', -MENU_ITEM_INTERVAL, start_game_transition))
-    self.items.append(MenuItem('RANKING', -MENU_ITEM_INTERVAL*2, show_ranking))
+    super().__init__('高次高調波発生ゲーム')
+    self.items.append(MenuItem('遊ぶ', -MENU_ITEM_INTERVAL, start_game_transition))
+    self.items.append(MenuItem('ランキング', -MENU_ITEM_INTERVAL*2, show_ranking))
+
+  def on_mouse_press(self, x, y, button, modifiers):
+    if button == pyglet.window.mouse.LEFT:
+      mid_y = WINDOW_HEIGHT//2
+      if (mid_y-MENU_ITEM_INTERVAL*0.5 > y) and (y > mid_y-MENU_ITEM_INTERVAL*1.5):
+        self.items[0].invoke_func()
+      if (mid_y-MENU_ITEM_INTERVAL*1.5 > y) and (y > mid_y-MENU_ITEM_INTERVAL*2.5):
+        self.items[1].invoke_func()
 
 # --------------------------------------------------------------------------
 # In game event handler
@@ -599,9 +618,9 @@ def gl_set_viewpoint():
       gluLookAt(VIEW_GAME_X, VIEW_GAME_Y, VIEW_GAME_Z, 0.0, 0.0, 0.0, 0.0, -1, 0)
     else:
       t = t_transition-0.5*CLEAR_DELAY
-      x = (VIEW_GAME_X-VIEW_START_X)*np.exp(-0.05*np.abs(VIEW_START_X-VIEW_GAME_X)*t/CLEAR_DELAY)+VIEW_START_X
-      y = (VIEW_GAME_Y-VIEW_START_Y)*np.exp(-0.05*np.abs(VIEW_START_Y-VIEW_GAME_Y)*t/CLEAR_DELAY)+VIEW_START_Y
-      z = (VIEW_GAME_Z-VIEW_START_Z)*np.exp(-0.05*np.abs(VIEW_START_Z-VIEW_GAME_Z)*t/CLEAR_DELAY)+VIEW_START_Z
+      x = (VIEW_GAME_X-VIEW_START_X)*np.exp(-0.1*np.abs(VIEW_START_X-VIEW_GAME_X)*t/CLEAR_DELAY)+VIEW_START_X
+      y = (VIEW_GAME_Y-VIEW_START_Y)*np.exp(-0.1*np.abs(VIEW_START_Y-VIEW_GAME_Y)*t/CLEAR_DELAY)+VIEW_START_Y
+      z = (VIEW_GAME_Z-VIEW_START_Z)*np.exp(-0.1*np.abs(VIEW_START_Z-VIEW_GAME_Z)*t/CLEAR_DELAY)+VIEW_START_Z
       gluLookAt(x, y, z, 0.0, 0.0, 0.0, 0.0, -1, 0)
   elif in_game or is_gameover:
     gluLookAt(VIEW_GAME_X, VIEW_GAME_Y, VIEW_GAME_Z, 0.0, 0.0, 0.0, 0.0, -1, 0)
