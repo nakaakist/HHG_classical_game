@@ -2,6 +2,8 @@
 HHG GAME
 '''
 import numpy as np
+import pandas as pd
+import os
 
 import pyglet
 from OpenGL.GL import *
@@ -20,26 +22,52 @@ ELECTRON_DRAW_PARAMS = {'diffuse': [0, 1, 0, 1],
 NUCLEAR_DRAW_PARAMS = {'diffuse': [1, 0, 0, 1],
                        'specular': [1, 1, 1, 1],
                        'shininess': 40,
-                       'slices': 15,
-                       'stacks': 15}
+                       'slices': 20,
+                       'stacks': 20}
 
 ATOM_RADIUS = 5
+IONIZATION_RADIUS = 7
+ELECTRON_SIZE = 1
+NUCLEAR_SIZE = 1.5
 ELECTRON_INITIAL_POSITION = [ATOM_RADIUS, 0, 0]
 ELECTRON_INITIAL_VELOCITY = [0, 1/np.sqrt(ATOM_RADIUS), 0]
 ELECTRON_ANGULAR_FREQUENCY = 1/np.sqrt(ATOM_RADIUS)**3
+ELECTRON_CACHE_NUM = 30
+LIGHT_CONE_SLICES = 50
+LIGHT_CONE_STACKS = 10
+LIGHT_CONE_BOTTOM = 20
+LIGHT_CONE_HEIGHT = 150
+LIGHT_CONE_COLOR_MAX_ENERGY = 40
+LIGHT_FLASH_MAX_ENERGY = 80
+X_MAX = 60
+Y_MAX = 60
+MESH_INTERVAL = 5
+RYDBERG = 27.21
 
-TIME_SCALE_FACTOR = 100
+TIME_SCALE_FACTOR = 20
+ELECTRIC_FIELD_SCALE_FACTOR = 0.0001
 
-FONT_NAME = ('Verdana', 'Helvetica', 'Arial')
+ELECTRIC_FIELD_WINDOW_FRACTION = 0.1
 
-INSTRUCTIONS = \
-'''Your ship is lost in a peculiar unchartered area of space-time infested with asteroids!  You have no chance for survival except to rack up the highest score possible.
+FONT_NAME = 'Osaka'
+RANKING_FILENAME = 'tmp/ranking.csv'
 
-Left/Right: Turn ship
-Up: Thrusters
-Space: Shoot
+MENU_TITLE_SIZE = 36
+MENU_TITLE_POSITION = WINDOW_HEIGHT/8
+MENU_ITEM_SIZE = 24
+MENU_ITEM_INTERVAL = WINDOW_HEIGHT/15
 
-Be careful, there's not much friction in space.'''
+START_GAME_DELAY = 1
+CLEAR_DELAY = 2
+
+VIEW_START_X = 0
+VIEW_START_Y = 50
+VIEW_START_Z = 50
+
+VIEW_GAME_X = 0
+VIEW_GAME_Y = 0
+VIEW_GAME_Z = 150
+
 
 # --------------------------------------------------------------------------
 # Game objects
@@ -55,26 +83,47 @@ class Particle:
   def draw(self):
     glPushMatrix()
     glTranslated(self.x, self.y, self.z)
-    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, self.draw_params['diffuse'])
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, self.draw_params['diffuse'])
     glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, self.draw_params['specular'])
     glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, self.draw_params['shininess'])
     glutSolidSphere(self.size, self.draw_params['slices'], self.draw_params['stacks'])
     glPopMatrix()
 
+  def update(self):
+    pass
+
 class Nuclear(Particle):
   def __init__(self, size, position, draw_params):
     super().__init__(size, position, draw_params)
-
-  def update(self):
-    pass
 
 class Electron_ionized(Particle):
   def __init__(self, size, position, velocity, draw_params):
     super().__init__(size, position, draw_params)
     self.vx, self.vy, self.vz = velocity
+    self.position_cache = [position]*ELECTRON_CACHE_NUM
+    self.is_active = True
 
   def update(self, dt, e):
-    self.__RK4_xy(dt, e[0], e[1])
+    self.__RK4_xy(dt, -e[0], -e[1])
+    self.position_cache = self.position_cache[1:]+[[self.x, self.y, self.z]]
+
+  def draw(self):
+    if self.is_active:
+      for i, p in enumerate(self.position_cache):
+        if i%2 == 0:
+          attenuation = np.exp(-(1-(i+1)/len(self.position_cache)))
+          glPushMatrix()
+          glTranslated(p[0], p[1], p[2])
+          diffuse = self.draw_params['diffuse']
+          diffuse[3] = attenuation**2
+          glEnable(GL_BLEND)
+          glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, self.draw_params['diffuse'])
+          glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, self.draw_params['specular'])
+          glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, self.draw_params['shininess'])
+          if i == len(self.position_cache)-2:
+            glDisable(GL_BLEND)
+          glutSolidSphere(self.size*attenuation, self.draw_params['slices'], int(self.draw_params['stacks']*attenuation))
+          glPopMatrix()
 
   def __coulomb_force_xy(self, x, y):
     return -x/np.sqrt(x**2+y**2)**3
@@ -117,417 +166,447 @@ class Electron_localized(Particle):
     self.y = self.r*np.sin(ELECTRON_ANGULAR_FREQUENCY*self.t+self.angle0)
     self.t += dt
 
+class Electric_field:
+  def __init__(self):
+    self.ex = 0
+    self.ey = 0
+
+  def draw(self):
+    glColor3d(1.0, 0.0, 0.0)
+    glBegin(GL_POLYGON)
+    glVertex2d(-WINDOW_WIDTH/2, -WINDOW_HEIGHT/2)
+    glVertex2d(-WINDOW_WIDTH/2, -WINDOW_HEIGHT*(0.5-ELECTRIC_FIELD_WINDOW_FRACTION))
+    glVertex2d(-WINDOW_WIDTH*(0.5-ELECTRIC_FIELD_WINDOW_FRACTION),
+               -WINDOW_HEIGHT*(0.5-ELECTRIC_FIELD_WINDOW_FRACTION))
+    glVertex2d(-WINDOW_WIDTH*(0.5-ELECTRIC_FIELD_WINDOW_FRACTION), -WINDOW_HEIGHT/2)
+    glEnd()
+
+class LightCone:
+  def __init__(self):
+    self.is_active = False
+    self.angle = 0
+
+  def draw(self):
+    if self.is_active:
+      glEnable(GL_BLEND)
+      glEnable(GL_LIGHT1)
+      glLightfv(GL_LIGHT1, GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0])
+      glLightfv(GL_LIGHT1, GL_SPECULAR, [50.0, 50.0, 50.0, 10.0])
+      glLightfv(GL_LIGHT1, GL_POSITION, [0.0, 0.0, 5.0, 1.0])
+      for axis in [-1, 1]:
+        glPushMatrix()
+        glRotated(self.angle, 0, 0, 1)
+        glRotated(90, 0, axis, 0)
+        glTranslated(0, 0, -LIGHT_CONE_HEIGHT)
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, self.__mix_color())
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [1, 1, 1, 1])
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SHININESS, 50)
+        glutSolidCone(LIGHT_CONE_BOTTOM,
+                      LIGHT_CONE_HEIGHT,
+                      LIGHT_CONE_SLICES,
+                      LIGHT_CONE_STACKS)
+        glPopMatrix()
+      glDisable(GL_LIGHT1)
+      glDisable(GL_BLEND)
+
+  def __mix_color(self):
+    global score
+    if score < 0.3*LIGHT_CONE_COLOR_MAX_ENERGY:
+      return [0, 0, (score/0.3/LIGHT_CONE_COLOR_MAX_ENERGY), 0.4]
+    elif score < 0.8*LIGHT_CONE_COLOR_MAX_ENERGY:
+      return [(score/0.5/LIGHT_CONE_COLOR_MAX_ENERGY)-0.3/0.5, 0, 1, 0.4]
+    elif score < LIGHT_CONE_COLOR_MAX_ENERGY:
+      return [1, (score/0.5/LIGHT_CONE_COLOR_MAX_ENERGY)-0.8/0.5, 1, 0.4]
+    else:
+      return [1, 0.4, 1, 0.4]
+
+class Mesh:
+  def __init__(self, xmax, ymax, mesh_interval):
+    self.xmax = xmax
+    self.ymax = ymax
+    self.mesh_interval = mesh_interval
+
+  def draw(self):
+    glBegin(GL_LINES)
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, [1, 1, 1, 1])
+    for x in np.arange(-self.xmax, self.xmax+self.mesh_interval, self.mesh_interval):
+      glVertex3d(x, -self.xmax, 0)
+      glVertex3d(x, self.xmax, 0)
+    for y in np.arange(-self.xmax, self.xmax+self.mesh_interval, self.mesh_interval):
+      glVertex3d(-self.xmax, y, 0)
+      glVertex3d(self.xmax, y, 0)
+    glEnd()
+
 # --------------------------------------------------------------------------
 # Overlays, such as menus and "Game Over" banners
 # --------------------------------------------------------------------------
 
-class Overlay(object):
-    def update(self, dt):
-        pass
+class Overlay:
+  def update(self, dt):
+    pass
 
-    def draw(self):
-        pass
+  def draw(self):
+    pass
 
 class Banner(Overlay):
-    def __init__(self, label, dismiss_func=None, timeout=None):
-        self.text = pyglet.text.Label(label,
-                                      font_name=FONT_NAME,
-                                      font_size=36,
-                                      x=ARENA_WIDTH // 2,
-                                      y=ARENA_HEIGHT // 2,
-                                      anchor_x='center',
-                                      anchor_y='center')
+  def __init__(self, label, invoke_func):
+    self.invoke_func = invoke_func
+    self.text = pyglet.text.Label(label,
+                                  font_name=FONT_NAME,
+                                  font_size=36,
+                                  x=0,
+                                  y=MENU_TITLE_POSITION,
+                                  anchor_x='center',
+                                  anchor_y='center')
+  def draw(self):
+    self.text.draw()
 
-        self.dismiss_func = dismiss_func
-        self.timeout = timeout
-        if timeout and dismiss_func:
-            pyglet.clock.schedule_once(dismiss_func, timeout)
+  def on_mouse_press(self, x, y, button, modifiers):
+    if button == pyglet.window.mouse.LEFT:
+      self.invoke_func()
 
-    def draw(self):
-        self.text.draw()
+class GameOver(Banner):
+  def __init__(self):
+    super().__init__('GAME OVER', show_start_menu)
 
-    def on_key_press(self, symbol, modifiers):
-        if self.dismiss_func and not self.timeout:
-            self.dismiss_func()
-        return True
+  def on_key_press(self, symbol, modifiers):
+    return True
+
+class TextList(Overlay):
+  def __init__(self, title, invoke_func):
+    self.items = []
+    self.invoke_func = invoke_func
+    self.title_text = pyglet.text.Label(title,
+                                        font_name=FONT_NAME,
+                                        font_size=MENU_TITLE_SIZE,
+                                        x=0,
+                                        y=MENU_TITLE_POSITION,
+                                        anchor_x='center',
+                                        anchor_y='center')
+  def draw(self):
+    self.title_text.draw()
+    [item.draw() for item in self.items]
+
+  def on_mouse_press(self, x, y, button, modifiers):
+    if button == pyglet.window.mouse.LEFT:
+      self.invoke_func()
+
+class TextListItem(Overlay):
+  def __init__(self, label, y):
+    self.text = pyglet.text.Label(label,
+                                  font_name=FONT_NAME,
+                                  font_size=MENU_ITEM_SIZE,
+                                  x=0,
+                                  y=y,
+                                  anchor_x='center',
+                                  anchor_y='center')
+
+  def draw(self):
+    self.text.draw()
+
+class Cleared(TextList):
+  def __init__(self, score):
+    super().__init__('CLEARED!', show_ranking_after_clear)
+    energy_text = TextListItem('エネルギー %d eV' % score, -MENU_ITEM_INTERVAL)
+    self.items.append(energy_text)
+
+class Ranking(TextList):
+  def __init__(self):
+    super().__init__('RANKING', show_start_menu)
+    if os.path.exists(RANKING_FILENAME):
+      ranking_data = pd.read_csv(RANKING_FILENAME).sort_values(by='score', ascending=False)
+      for i in range(min(5, ranking_data.index.size)):
+        rank_text = TextListItem('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']), -MENU_ITEM_INTERVAL*(i+1))
+        self.items.append(rank_text)
+    else:
+      rank_text = TextListItem('データなし', -MENU_ITEM_INTERVAL)
+
+class RankingAfterClear(TextList):
+  def __init__(self):
+    global score, ranking_data
+    if ranking_data is None:
+      super().__init__('ハイスコア! あなたの順位は1位です', input_name_for_ranking)
+      rank_text = TextListItem('1位: あなた  %d eV' % score, -MENU_ITEM_INTERVAL)
+      rank_text.text.color = [255]*4
+      self.items.append(rank_text)
+    else:
+      rank = ranking_data[ranking_data.score > score].index.size+1
+      if rank < 5:
+        super().__init__('ハイスコア! あなたの順位は%d位です' % rank, input_name_for_ranking)
+        i_rank = 0
+        for i in range(min(5, ranking_data.index.size)):
+          if i_rank == rank-1:
+            rank_text = TextListItem('%d位: あなた  %d eV' % (i_rank+1, score), -MENU_ITEM_INTERVAL*(i_rank+1))
+            rank_text.text.color = [255, 255, 0, 255]
+          else:
+            rank_text = TextListItem('%d位: %s さん  %d eV' % (i_rank+1, ranking_data.iloc[i_rank]['name'], ranking_data.iloc[i_rank]['score']), -MENU_ITEM_INTERVAL*(i_rank+1))
+          i_rank += 1
+          self.items.append(rank_text)
+      else:
+        super().__init__('ランク外。あなたの順位は%d位です' % rank, show_start_menu)
+        for i in range(min(5, ranking_data.index.size)):
+          rank_text = TextListItem('%d位: %s さん  %d eV' % (i+1, ranking_data.iloc[i]['name'], ranking_data.iloc[i]['score']), -MENU_ITEM_INTERVAL*(i+1))
+          self.items.append(rank_text)
+
+class InputName(Overlay):
+  def __init__(self):
+    self.name = ''
+    self.title_text = pyglet.text.Label('名前を入力',
+                                        font_name=FONT_NAME,
+                                        font_size=MENU_TITLE_SIZE,
+                                        x=0,
+                                        y=MENU_TITLE_POSITION,
+                                        anchor_x='center',
+                                        anchor_y='center')
+
+  def on_text(self, text):
+    self.name += text
+
+  def on_key_press(self, symbol, modifiers):
+    if symbol == pyglet.window.key.ENTER:
+      global ranking_data, score
+      self.name = self.name.rstrip()
+      current_data = pd.DataFrame([self.name, score]).T.rename(columns={0: 'name', 1: 'score'})
+      if ranking_data is not None:
+        appended_ranking_data = ranking_data.append(current_data)
+      else:
+        appended_ranking_data = current_data
+      appended_ranking_data.to_csv(RANKING_FILENAME, index=False)
+      show_start_menu()
+
+  def draw(self):
+    self.title_text.draw()
+    if self.name:
+      self.text = pyglet.text.Label(self.name,
+                                    font_name=FONT_NAME,
+                                    font_size=MENU_ITEM_SIZE,
+                                    x=0,
+                                    y=-100,
+                                    anchor_x='center',
+                                    anchor_y='center')
+      self.text.draw()
 
 class Menu(Overlay):
-    def __init__(self, title):
-        self.items = []
-        self.title_text = pyglet.text.Label(title, 
-                                            font_name=FONT_NAME,
-                                            font_size=36,
-                                            x=ARENA_WIDTH // 2, 
-                                            y=350,
-                                            anchor_x='center',
-                                            anchor_y='center')
+  def __init__(self, title):
+    self.items = []
+    self.selected_index = 0
+    self.title_text = pyglet.text.Label(title,
+                                        font_name=FONT_NAME,
+                                        font_size=MENU_TITLE_SIZE,
+                                        x=0,
+                                        y=MENU_TITLE_POSITION,
+                                        anchor_x='center',
+                                        anchor_y='center')
 
-    def reset(self):
-        self.selected_index = 0
-        self.items[self.selected_index].selected = True
+  def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+    self.selected_index += scroll_y
+    self.selected_index %= len(self.items)
 
-    def on_key_press(self, symbol, modifiers):
-        if symbol == key.DOWN:
-            self.selected_index += 1
-        elif symbol == key.UP:
-            self.selected_index -= 1
-        self.selected_index = min(max(self.selected_index, 0), 
-                                  len(self.items) - 1)
+  def on_mouse_press(self, x, y, button, modifiers):
+    self.items[self.selected_index].invoke_func()
 
-        if symbol in (key.DOWN, key.UP) and enable_sound:
-            bullet_sound.play()
-
-    def on_key_release(self, symbol, modifiers):
-        self.items[self.selected_index].on_key_release(symbol, modifiers)
-
-    def draw(self):
-        self.title_text.draw()
-        for i, item in enumerate(self.items):
-            item.draw(i == self.selected_index)
+  def draw(self):
+    self.title_text.draw()
+    for i, item in enumerate(self.items):
+      item.draw(i == self.selected_index)
 
 class MenuItem(object):
-    pointer_color = (.46, 0, 1.)
-    inverted_pointers = False
+  def __init__(self, label, y, invoke_func):
+    self.y = y
+    self.invoke_func = invoke_func
+    self.text = pyglet.text.Label(label,
+                                  font_name=FONT_NAME,
+                                  font_size=MENU_ITEM_SIZE,
+                                  x=0,
+                                  y=y,
+                                  anchor_x='center',
+                                  anchor_y='center')
 
-    def __init__(self, label, y, activate_func):
-        self.y = y
-        self.text = pyglet.text.Label(label,
-                                      font_name=FONT_NAME,
-                                      font_size=14,
-                                      x=ARENA_WIDTH // 2, 
-                                      y=y,
-                                      anchor_x='center',
-                                      anchor_y='center')
-        self.activate_func = activate_func
+  def draw(self, selected):
+    if selected:
+      self.text.color = [255]*4
+    else:
+      self.text.color = [150]*4
+    self.text.draw()
 
-    def draw_pointer(self, x, y, color, flip=False):
-        # Tint the pointer image to a color
-        glPushAttrib(GL_CURRENT_BIT)
-        glColor3f(*color)
-        if flip:
-            pointer_image_flip.blit(x, y)
-        else:
-            pointer_image.blit(x, y)
-        glPopAttrib()
+class StartMenu(Menu):
+  def __init__(self):
+    super().__init__('HHG GAME')
+    self.items.append(MenuItem('START', -MENU_ITEM_INTERVAL, start_game_transition))
+    self.items.append(MenuItem('RANKING', -MENU_ITEM_INTERVAL*2, show_ranking))
 
-    def draw(self, selected):
-        self.text.draw()
+# --------------------------------------------------------------------------
+# In game event handler
+# --------------------------------------------------------------------------
 
-        if selected:
-            self.draw_pointer(
-                self.text.x - self.text.content_width // 2 - 
-                    pointer_image.width // 2,
-                self.y, 
-                self.pointer_color,
-                self.inverted_pointers)
-            self.draw_pointer(
-                self.text.x + self.text.content_width // 2 + 
-                    pointer_image.width // 2,
-                self.y,
-                self.pointer_color,
-                not self.inverted_pointers)
+class InGameEventHandler(object):
+  def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+    global electric_field
+    if buttons & pyglet.window.mouse.LEFT:
+      electric_field.ex = ELECTRIC_FIELD_SCALE_FACTOR*(x-WINDOW_WIDTH/2)
+      electric_field.ey = ELECTRIC_FIELD_SCALE_FACTOR*(y-WINDOW_HEIGHT/2)
 
-    def on_key_release(self, symbol, modifiers):
-        if symbol == key.ENTER and self.activate_func:
-            self.activate_func()
-            if enable_sound:
-                bullet_sound.play()
-
-class ToggleMenuItem(MenuItem):
-    pointer_color = (.27, .82, .25)
-    inverted_pointers = True
-
-    def __init__(self, label, value, y, toggle_func):
-        self.value = value
-        self.label = label
-        self.toggle_func = toggle_func
-        super(ToggleMenuItem, self).__init__(self.get_label(), y, None)
-
-    def get_label(self):
-        return self.label + (self.value and ': ON' or ': OFF')
-
-    def on_key_release(self, symbol, modifiers):
-        if symbol == key.LEFT or symbol == key.RIGHT:
-            self.value = not self.value
-            self.text.text = self.get_label()
-            self.toggle_func(self.value)
-            if enable_sound:
-                bullet_sound.play()
-
-class DifficultyMenuItem(MenuItem):
-    pointer_color = (.27, .82, .25)
-    inverted_pointers = True
-
-    def __init__(self, y):
-        super(DifficultyMenuItem, self).__init__(self.get_label(), y, None)
-
-    def get_label(self):
-        if difficulty == 0:
-            return 'Difficulty: Pebbles'
-        elif difficulty == 1:
-            return 'Difficulty: Stones'
-        elif difficulty == 2:
-            return 'Difficulty: Asteroids'
-        elif difficulty == 3:
-            return 'Difficulty: Meteors'
-        else:
-            return 'Difficulty: %d' % difficulty
-
-    def on_key_release(self, symbol, modifiers):
-        global difficulty
-        if symbol == key.LEFT:
-            difficulty -= 1
-        elif symbol == key.RIGHT:
-            difficulty += 1
-        difficulty = min(max(difficulty, 0), MAX_DIFFICULTY)
-        self.text.text = self.get_label()
-
-        if symbol in (key.LEFT, key.RIGHT) and enable_sound:
-            bullet_sound.play()
-
-class MainMenu(Menu):
-    def __init__(self):
-        super(MainMenu, self).__init__('Astraea')
-
-        self.items.append(MenuItem('New Game', 240, begin_game))
-        self.items.append(MenuItem('Instructions', 200, 
-                                   begin_instructions_menu))
-        self.items.append(MenuItem('Options', 160, begin_options_menu))
-        self.items.append(MenuItem('Quit', 120, sys.exit))
-        self.reset()
-
-class OptionsMenu(Menu):
-    def __init__(self):
-        super(OptionsMenu, self).__init__('Options')
-
-        self.items.append(DifficultyMenuItem(280))
-        def set_enable_sound(value):
-            global enable_sound
-            enable_sound = value
-        self.items.append(ToggleMenuItem('Sound', enable_sound, 240,
-                                         set_enable_sound))
-
-        def set_enable_fullscreen(value):
-            win.set_fullscreen(value, width=ARENA_WIDTH, height=ARENA_HEIGHT)
-        self.items.append(ToggleMenuItem('Fullscreen', win.fullscreen, 200,
-                                         set_enable_fullscreen))
-                                
-        self.items.append(ToggleMenuItem('Vsync', win.vsync, 160, 
-                                         win.set_vsync))
-
-        def set_show_fps(value):
-            global show_fps
-            show_fps = value
-        self.items.append(ToggleMenuItem('FPS', show_fps, 120, set_show_fps))
-        self.items.append(MenuItem('Ok', 60, begin_main_menu))
-        self.reset()
-
-class InstructionsMenu(Menu):
-    def __init__(self):
-        super(InstructionsMenu, self).__init__('Instructions')
-
-        self.items.append(MenuItem('Ok', 50, begin_main_menu))
-        self.reset()
-
-        self.instruction_text = pyglet.text.Label(INSTRUCTIONS,
-                                                  font_name=FONT_NAME,
-                                                  font_size=14,
-                                                  x=20, y=300,
-                                                  width=ARENA_WIDTH - 40,
-                                                  anchor_y='top',
-                                                  multiline=True)
-
-    def draw(self):
-        super(InstructionsMenu, self).draw()
-        self.instruction_text.draw()
-
-class PauseMenu(Menu):
-    def __init__(self):
-        super(PauseMenu, self).__init__('Paused')
-
-        self.items.append(MenuItem('Continue Game', 240, resume_game))
-        self.items.append(MenuItem('Main Menu', 200, end_game))
-        self.reset()
+  def on_mouse_release(self, x, y, button, modifiers):
+    global electric_field
+    electric_field.ex = 0
+    electric_field.ey = 0
 
 # --------------------------------------------------------------------------
 # Game state functions
 # --------------------------------------------------------------------------
 
-def check_collisions():
-    # Check for collisions using an approximate uniform grid.
-    #
-    #   1. Mark all grid cells that the bullets are in
-    #   2. Mark all grid cells that the player is in
-    #   3. For each asteroid, check grid cells that are covered for
-    #      a collision.
-    #
-    # This is by no means perfect collision detection (in particular,
-    # there are rounding errors, and it doesn't take into account the
-    # arena wrapping).  Improving it is left as an exercise for the
-    # reader.
-
-    # The collision grid.  It is recreated each iteration, as bullets move
-    # quickly.
-    hit_squares = {}
-
-    # 1. Mark all grid cells that the bullets are in.  Assume bullets
-    #    occupy a single cell.
-    for bullet in bullets:
-        hit_squares[int(bullet.x / COLLISION_RESOLUTION), 
-                    int(bullet.y / COLLISION_RESOLUTION)] = bullet
-
-    # 2. Mark all grid cells that the player is in.
-    for x, y in player.collision_cells():
-        hit_squares[x, y] = player
-
-    # 3. Check grid cells of each asteroid for a collision.
-    for asteroid in asteroids:
-        for x, y in asteroid.collision_cells():
-           if (x, y) in hit_squares:
-                asteroid.hit = True
-                hit_squares[x, y].hit = True
-                del hit_squares[x, y]
-
-def begin_main_menu():
-    set_overlay(MainMenu())
-
-def begin_options_menu():
-    set_overlay(OptionsMenu())
-
-def begin_instructions_menu():
-    set_overlay(InstructionsMenu())
-
-def begin_game():
-    global player_lives
-    global score
-    player_lives = 3
-    score = 0
-
-    begin_clear_background()
-    set_overlay(Banner('Get Ready', begin_first_round, GET_READY_DELAY))
-
-def begin_first_round(*args):
-    player.reset()
-    player.visible = True
-    begin_round()
-
-def next_round(*args):
-    global in_game
-    player.invincible = True
-    in_game = False
-    set_overlay(Banner('Get Ready', begin_round, GET_READY_DELAY))
-
-def begin_round(*args):
-    global asteroids
-    global bullets
-    global animations
-    global in_game
-    asteroids = []
-    for i in range(INITIAL_ASTEROIDS[difficulty]):
-        x = random.random() * ARENA_WIDTH
-        y = random.random() * ARENA_HEIGHT
-        asteroids.append(Asteroid(asteroid_sizes[-1], x, y, wrapping_batch))
-
-    for bullet in bullets:
-        bullet.delete()
-
-    for animation in animations:
-        animation.delete()
-
-    bullets = []
-    animations = []
-    in_game = True
-    set_overlay(None)
-    pyglet.clock.schedule_once(begin_play, BEGIN_PLAY_DELAY)
-
-def begin_play(*args):
-    player.invincible = False
-
-def begin_life(*args):
-    player.reset()
-    pyglet.clock.schedule_once(begin_play, BEGIN_PLAY_DELAY)
-
-def life_lost(*args):
-    global player_lives
-    player_lives -= 1
-
-    if player_lives > 0:
-        begin_life()
-    else:
-        game_over()
-
-def game_over():
-    set_overlay(Banner('Game Over', end_game))
-
-def pause_game():
-    global paused
-    paused = True
-    set_overlay(PauseMenu())
-
-def resume_game():
-    global paused
-    paused = False
-    set_overlay(None)
-
-def end_game():
-    global in_game
-    global paused
-    paused = False
-    in_game = False
-    player.invincible = True
-    pyglet.clock.unschedule(life_lost)
-    pyglet.clock.unschedule(begin_play)
-    begin_menu_background()
-    set_overlay(MainMenu())
+def init_objects():
+  global electron_ionized, electron_localized, nuclear, electric_field, light_cone, mesh
+  electron_ionized = Electron_ionized(ELECTRON_SIZE, ELECTRON_INITIAL_POSITION, ELECTRON_INITIAL_VELOCITY, ELECTRON_DRAW_PARAMS)
+  electron_localized = Electron_localized(ELECTRON_SIZE, ELECTRON_INITIAL_POSITION, ELECTRON_INITIAL_VELOCITY, ELECTRON_DRAW_PARAMS)
+  nuclear = Nuclear(NUCLEAR_SIZE, [0, 0, 0], NUCLEAR_DRAW_PARAMS)
+  electric_field = Electric_field()
+  light_cone = LightCone()
+  mesh = Mesh(X_MAX, Y_MAX, MESH_INTERVAL)
 
 def set_overlay(new_overlay):
-    global overlay
-    if overlay:
-        win.remove_handlers(overlay)
-    overlay = new_overlay
-    if overlay:
-        win.push_handlers(overlay)
+  global overlay
+  if overlay:
+    win.remove_handlers(overlay)
+  overlay = new_overlay
+  if overlay:
+    win.push_handlers(overlay)
 
-def begin_menu_background():
-    global asteroids
-    global bullets
-    global animations
-    global in_game
-    global player_lives
+def start_game_transition():
+  global in_start_menu, in_transition_from_start_menu_to_game, t_transition
+  set_overlay(None)
+  in_start_menu = False
+  in_transition_from_start_menu_to_game = True
+  t_transition = 0
+  pyglet.clock.schedule_once(start_game, START_GAME_DELAY)
 
-    asteroids = []
-    for i in range(11):
-        x = random.random() * ARENA_WIDTH
-        y = random.random() * ARENA_HEIGHT
-        asteroids.append(Asteroid(asteroid_sizes[i // 4], x, y, wrapping_batch))
+def start_game(dt):
+  global in_transition_from_start_menu_to_game, in_game_event_handler, in_game
+  in_game_event_handler = InGameEventHandler()
+  set_overlay(None)
+  win.push_handlers(in_game_event_handler)
+  in_transition_from_start_menu_to_game = False
+  in_game = True
 
-    for bullet in bullets:
-        bullet.delete()
+def show_ranking():
+ set_overlay(Ranking())
 
-    for animation in animations:
-        animation.delete()
-
-    bullets = []
-    animations = []
+def check_gameover():
+  global electron_ionized, in_game, is_gameover, is_ionized
+  if np.abs(electron_ionized.x) > X_MAX or np.abs(electron_ionized.y) > Y_MAX:
     in_game = False
-    player_lives = 0
-    player.visible = False
+    is_ionized = False
+    is_gameover = True
+    win.remove_handlers(in_game_event_handler)
+    set_overlay(GameOver())
 
-def begin_clear_background():
-    global asteroids
-    global bullets
-    global animations
+def check_collision():
+  global electron_ionized, in_game, is_cleared, is_ionized, score, light_cone
+  r = np.sqrt(electron_ionized.x**2+electron_ionized.y**2)
+  if (not is_ionized) and (r > IONIZATION_RADIUS) and (not is_gameover):
+    is_ionized = True
+  if is_ionized and r < ATOM_RADIUS:
+    energy = np.sqrt(electron_ionized.vx**2+electron_ionized.vy**2)/2
+    score = energy*RYDBERG
+    in_game = False
+    is_ionized = False
+    electron_ionized.is_active = False
+    light_cone.is_active = True
+    light_cone.angle = 180/np.pi*np.arctan(-electron_ionized.vx/electron_ionized.vy)
+    win.remove_handlers(in_game_event_handler)
+    clear_transition()
 
-    for bullet in bullets:
-        bullet.delete()
+def clear_transition():
+  global in_transition_from_game_to_cleared, t_transition
+  set_overlay(None)
+  in_transition_from_game_to_cleared = True
+  t_transition = 0
+  pyglet.clock.schedule_once(cleared, CLEAR_DELAY)
 
-    for animation in animations:
-        animation.delete()
+def cleared(dt):
+  global in_transition_from_game_to_cleared, is_cleared
+  in_transition_from_game_to_cleared = False
+  is_cleared = True
+  set_overlay(Cleared(score))
 
-    asteroids = []
-    bullets = []
-    animations = []
-    player.visible = False
+def show_ranking_after_clear():
+  global ranking_data, is_cleared
+  is_cleared = False
+  if os.path.exists(RANKING_FILENAME):
+    ranking_data = pd.read_csv(RANKING_FILENAME).sort_values(by='score', ascending=False)
+  else:
+    ranking_data = None
+  set_overlay(RankingAfterClear())
+
+def input_name_for_ranking():
+  set_overlay(InputName())
+
+def show_start_menu():
+  global is_gameover, in_start_menu
+  is_gameover = False
+  in_start_menu = True
+  set_overlay(StartMenu())
+  init_objects()
+
+# --------------------------------------------------------------------------
+# OpenGL functions
+# --------------------------------------------------------------------------
+
+def init_gl():
+  glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
+  glEnable(GL_CULL_FACE)
+  glCullFace(GL_BACK)
+  glEnable(GL_DEPTH_TEST)
+  glEnable(GL_LIGHTING)
+  glEnable(GL_LIGHT0)
+  glLightfv(GL_LIGHT0, GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0])
+  glLightfv(GL_LIGHT0, GL_SPECULAR, [1.0, 1.0, 1.0, 1.0])
+
+def gl_prepare_for_2D():
+  glPushMatrix()
+  glLoadIdentity()
+  glMatrixMode(GL_PROJECTION)
+  glPushMatrix()
+  glLoadIdentity()
+  glOrtho(-win.width//2, win.width//2, -win.height//2, win.height//2, -1, 1);
+  glDisable(GL_LIGHTING)
+  glDisable(GL_DEPTH_TEST)
+
+def gl_prepare_for_3D():
+  glEnable(GL_DEPTH_TEST)
+  glEnable(GL_LIGHTING)
+  glPopMatrix()
+  glMatrixMode(GL_MODELVIEW)
+  glPopMatrix()
+
+def gl_clear_color_setting():
+  global score
+  if in_transition_from_game_to_cleared:
+    factor = min(LIGHT_FLASH_MAX_ENERGY, score)/LIGHT_FLASH_MAX_ENERGY
+    light_enhancement = factor*np.exp(-(t_transition/CLEAR_DELAY)*5)
+    glClearColor(light_enhancement, light_enhancement, light_enhancement, light_enhancement)
+  else:
+    glClearColor(0, 0, 0, 0)
+
+def gl_set_viewpoint():
+  if in_transition_from_start_menu_to_game:
+    x = (VIEW_START_X-VIEW_GAME_X)*np.exp(-0.05*np.abs(VIEW_GAME_X-VIEW_START_X)*t_transition/START_GAME_DELAY)+VIEW_GAME_X
+    y = (VIEW_START_Y-VIEW_GAME_Y)*np.exp(-0.05*np.abs(VIEW_GAME_Y-VIEW_START_Y)*t_transition/START_GAME_DELAY)+VIEW_GAME_Y
+    z = (VIEW_START_Z-VIEW_GAME_Z)*np.exp(-0.05*np.abs(VIEW_GAME_Z-VIEW_START_Z)*t_transition/START_GAME_DELAY)+VIEW_GAME_Z
+    gluLookAt(x, y, z, 0.0, 0.0, 0.0, 0.0, -1, 0)
+  elif in_transition_from_game_to_cleared:
+    if t_transition < 0.5*CLEAR_DELAY:
+      gluLookAt(VIEW_GAME_X, VIEW_GAME_Y, VIEW_GAME_Z, 0.0, 0.0, 0.0, 0.0, -1, 0)
+    else:
+      t = t_transition-0.5*CLEAR_DELAY
+      x = (VIEW_GAME_X-VIEW_START_X)*np.exp(-0.05*np.abs(VIEW_START_X-VIEW_GAME_X)*t/CLEAR_DELAY)+VIEW_START_X
+      y = (VIEW_GAME_Y-VIEW_START_Y)*np.exp(-0.05*np.abs(VIEW_START_Y-VIEW_GAME_Y)*t/CLEAR_DELAY)+VIEW_START_Y
+      z = (VIEW_GAME_Z-VIEW_START_Z)*np.exp(-0.05*np.abs(VIEW_START_Z-VIEW_GAME_Z)*t/CLEAR_DELAY)+VIEW_START_Z
+      gluLookAt(x, y, z, 0.0, 0.0, 0.0, 0.0, -1, 0)
+  elif in_game or is_gameover:
+    gluLookAt(VIEW_GAME_X, VIEW_GAME_Y, VIEW_GAME_Z, 0.0, 0.0, 0.0, 0.0, -1, 0)
+  else:
+    gluLookAt(VIEW_START_X, VIEW_START_Y, VIEW_START_Z, 0.0, 0.0, 0.0, 0.0, -1, 0)
 
 # --------------------------------------------------------------------------
 # Create window
@@ -537,13 +616,22 @@ win = pyglet.window.Window(WINDOW_WIDTH, WINDOW_HEIGHT, caption='HHG Game')
 
 @win.event
 def on_draw():
+  gl_clear_color_setting()
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
   glLoadIdentity()
-  gluLookAt(0, 0, 50, 0.0, 0.0, 0.0, 0.0, 1, 0)
+  gl_set_viewpoint()
   glLightfv(GL_LIGHT0, GL_POSITION, [5.0, 5.0, 5.0, 0.0])
+  mesh.draw()
+  light_cone.draw()
   electron_ionized.draw()
   electron_localized.draw()
   nuclear.draw()
+  gl_prepare_for_2D()
+  if overlay:
+    overlay.draw()
+  if in_game:
+    electric_field.draw()
+  gl_prepare_for_3D()
 
 @win.event
 def on_resize(width, height):
@@ -558,13 +646,29 @@ def on_resize(width, height):
 # Global game state vars
 # --------------------------------------------------------------------------
 
+in_start_menu = True
+in_game = False
+in_transition_from_start_menu_to_game = False
+is_ionized = False
+is_gameover = False
+in_transition_from_game_to_cleared = False
+is_cleared = False
+
+t_transition = 0
+score = 0
+
 # --------------------------------------------------------------------------
 # Game update
 # --------------------------------------------------------------------------
 
 def update(dt):
+  global t_transition, electric_field, mesh
+  if in_game:
+    check_gameover()
+    check_collision()
   dt_scaled = dt*TIME_SCALE_FACTOR
-  electron_ionized.update(dt_scaled, [0, 0])
+  t_transition += dt
+  electron_ionized.update(dt_scaled, [electric_field.ex, electric_field.ey])
   electron_localized.update(dt_scaled)
   nuclear.update()
 
@@ -573,20 +677,9 @@ pyglet.clock.schedule_interval(update, 1/60.)
 # --------------------------------------------------------------------------
 # Start game
 # --------------------------------------------------------------------------
-def init_gl():
-  glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
-  glEnable(GL_CULL_FACE)
-  glCullFace(GL_BACK)
-  glEnable(GL_DEPTH_TEST)
-  glEnable(GL_LIGHTING)
-  glEnable(GL_LIGHT0)
-  glLightfv(GL_LIGHT0, GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0])
-  glLightfv(GL_LIGHT0, GL_SPECULAR, [1.0, 1.0, 1.0, 1.0])
 
-electron_ionized = Electron_ionized(3, [10, 0, 0], [0, 1, 0], ELECTRON_DRAW_PARAMS)
-electron_localized = Electron_localized(3, [10, 0, 0], [0, 1, 0], ELECTRON_DRAW_PARAMS)
-nuclear = Nuclear(5, [0, 0, 0], NUCLEAR_DRAW_PARAMS)
-
+overlay = StartMenu()
+set_overlay(overlay)
+init_objects()
 init_gl()
 pyglet.app.run()
-
