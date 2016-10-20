@@ -10,8 +10,8 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 from OpenGL.GLUT import *
 
-WINDOW_WIDTH  = 1000
-WINDOW_HEIGHT = 700
+WINDOW_WIDTH  = 1300
+WINDOW_HEIGHT = 800
 
 ELECTRON_DRAW_PARAMS = {'diffuse': [0, 1, 0, 1],
                         'specular': [1, 1, 1, 1],
@@ -172,7 +172,7 @@ class Electric_field:
     self.ey = 0
 
   def draw(self):
-    glColor3d(1.0, 0.0, 0.0)
+    glColor3d(1.0, 1.0, 1.0)
     glBegin(GL_POLYGON)
     glVertex2d(-WINDOW_WIDTH/2, -WINDOW_HEIGHT/2)
     glVertex2d(-WINDOW_WIDTH/2, -WINDOW_HEIGHT*(0.5-ELECTRIC_FIELD_WINDOW_FRACTION))
@@ -334,7 +334,7 @@ class RankingAfterClear(TextList):
       self.items.append(rank_text)
     else:
       rank = ranking_data[ranking_data.score > score].index.size+1
-      if rank < 5:
+      if rank < 6:
         super().__init__('ハイスコア! あなたの順位は%d位です' % rank, input_name_for_ranking)
         i_rank = 0
         for i in range(min(5, ranking_data.index.size)):
@@ -376,6 +376,9 @@ class InputName(Overlay):
         appended_ranking_data = current_data
       appended_ranking_data.to_csv(RANKING_FILENAME, index=False)
       show_start_menu()
+    elif symbol == pyglet.window.key.BACKSPACE:
+      if len(self.name) > 0:
+        self.name = self.name[:-1]
 
   def draw(self):
     self.title_text.draw()
@@ -396,9 +399,9 @@ class Menu(Overlay):
     self.selected_index = 0
     self.title_text = pyglet.text.Label(title,
                                         font_name=FONT_NAME,
-                                        font_size=MENU_TITLE_SIZE,
+                                        font_size=MENU_TITLE_SIZE*2,
                                         x=0,
-                                        y=MENU_TITLE_POSITION,
+                                        y=MENU_TITLE_POSITION*2,
                                         anchor_x='center',
                                         anchor_y='center')
 
@@ -440,7 +443,7 @@ class MenuItem(object):
 
 class StartMenu(Menu):
   def __init__(self):
-    super().__init__('高次高調波発生ゲーム')
+    super().__init__('高調波発生ゲーム')
     self.items.append(MenuItem('遊ぶ', -MENU_ITEM_INTERVAL, start_game_transition))
     self.items.append(MenuItem('ランキング', -MENU_ITEM_INTERVAL*2, show_ranking))
     self.items.append(MenuItem('遊び方', -MENU_ITEM_INTERVAL*3, start_tutorial_transition))
@@ -452,15 +455,21 @@ class StartMenu(Menu):
 
 class InGameEventHandler(object):
   def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
-    global electric_field
-    if buttons & pyglet.window.mouse.LEFT:
-      electric_field.ex = ELECTRIC_FIELD_SCALE_FACTOR*(x-WINDOW_WIDTH/2)
-      electric_field.ey = ELECTRIC_FIELD_SCALE_FACTOR*(y-WINDOW_HEIGHT/2)
+    self.__update_electric_field(x, y, buttons)
+
+  def on_mouse_press(self, x, y, button, modifiers):
+    self.__update_electric_field(x, y, button)
 
   def on_mouse_release(self, x, y, button, modifiers):
     global electric_field
     electric_field.ex = 0
     electric_field.ey = 0
+
+  def __update_electric_field(self, x, y, buttons):
+    global electric_field
+    if buttons & pyglet.window.mouse.LEFT:
+      electric_field.ex = ELECTRIC_FIELD_SCALE_FACTOR*(x-WINDOW_WIDTH/2)
+      electric_field.ey = ELECTRIC_FIELD_SCALE_FACTOR*(y-WINDOW_HEIGHT/2)/WINDOW_HEIGHT*WINDOW_WIDTH
 
 # --------------------------------------------------------------------------
 # Game state functions
